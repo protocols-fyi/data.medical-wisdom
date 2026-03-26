@@ -24,6 +24,7 @@ from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
 from aws_utils import AWS_BEDROCK_SUPPORTED_MODEL_IDS
+from aws_utils import NOISY_LOGGERS
 from entities import Pass1Record
 from generator import generate_pass2_record
 
@@ -96,6 +97,8 @@ async def main() -> None:
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+    for logger_name in NOISY_LOGGERS:
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
     assert args.input_path.is_file(), f"Input file not found: {args.input_path}"
     assert args.max_tokens >= 1, "--max-tokens must be at least 1."
     assert 0.0 <= args.temperature <= 1.0, "--temperature must be between 0.0 and 1.0."
@@ -149,13 +152,8 @@ async def main() -> None:
                     raise ValueError(
                         f"Invalid Pass1Record at input line {line_number}: {exc}\n{stripped_line}"
                     ) from exc
-                logger.info(
-                    "Generating Pass2Record | line=%d | id=%s",
-                    line_number,
-                    pass1_record.id,
-                )
                 try:
-                    pass2_record = await generate_pass2_record(
+                    pass2_record, bedrock_response = await generate_pass2_record(
                         pass1_record,
                         model_name=args.model_name,
                         region=args.region,
@@ -172,10 +170,15 @@ async def main() -> None:
                 output_file.write("\n")
                 output_file.flush()
                 logger.info(
-                    "Wrote Pass2Record | line=%d | id=%s | output=%s",
+                    "Generated Pass2Record | line=%d | id=%s | output=%s | model=%s | stop_reason=%s | input_tokens=%d | output_tokens=%d | duration_seconds=%.3f",
                     line_number,
                     pass2_record.id,
                     output_path,
+                    bedrock_response.resolved_model_id,
+                    bedrock_response.stop_reason,
+                    bedrock_response.input_tokens,
+                    bedrock_response.output_tokens,
+                    bedrock_response.duration_seconds,
                 )
                 progress.update(1)
 

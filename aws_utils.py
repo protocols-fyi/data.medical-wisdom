@@ -10,6 +10,7 @@ request because this box is rate limited by Bedrock.
 """
 
 import asyncio
+from dataclasses import dataclass
 import logging
 import os
 import time
@@ -44,7 +45,22 @@ NOISY_LOGGERS = (
     "botocore.hooks",
     "botocore.session",
     "botocore.utils",
+    "httpcore",
+    "httpx",
 )
+
+
+@dataclass(frozen=True)
+class BedrockResponse:
+    text: str
+    resolved_model_id: str
+    region: str
+    stop_reason: str | None
+    input_tokens: int
+    output_tokens: int
+    cache_creation_input_tokens: int | None
+    cache_read_input_tokens: int | None
+    duration_seconds: float
 
 
 def resolve_bedrock_credentials() -> tuple[str | None, str | None, str | None]:
@@ -79,12 +95,6 @@ def extract_text_blocks(message: Message) -> str:
             continue
         logger.warning("Ignoring unsupported Bedrock content block | type=%s", block_type)
 
-    logger.info(
-        "Parsed Bedrock response blocks | text_blocks=%d | thinking_blocks=%d | redacted_thinking_blocks=%d",
-        len(visible_blocks),
-        thinking_block_count,
-        redacted_thinking_block_count,
-    )
     visible_text = "\n\n".join(visible_blocks).strip()
     assert visible_text, "Bedrock response did not contain any visible text blocks."
     return visible_text
@@ -113,7 +123,8 @@ async def ask_bedrock(
     system_prompt: str = "",
     top_p: float | None = None,
     json_output_schema: dict[str, Any] | None = None,
-) -> str:
+    log_response_summary: bool = True,
+) -> BedrockResponse:
     assert model_name in AWS_BEDROCK_SUPPORTED_MODEL_IDS, f"Unsupported Bedrock model: {model_name}"
     resolved_model_id = AWS_BEDROCK_SUPPORTED_MODEL_IDS[model_name]
     resolved_region = resolve_region(region.strip() if region is not None else None)
@@ -152,15 +163,16 @@ async def ask_bedrock(
         max_retries=0,
         timeout=timeout_seconds,
     ) as client:
-        logger.info(
-            "Starting Bedrock request | model=%s | resolved_bedrock_model_id=%s | region=%s | credential_source=%s | max_tokens=%d | temperature=%.3f",
-            model_name,
-            resolved_model_id,
-            resolved_region,
-            "AWS_BEDROCK_*" if access_key is not None else "default AWS chain",
-            max_tokens,
-            temperature,
-        )
+        if log_response_summary:
+            logger.info(
+                "Starting Bedrock request | model=%s | resolved_bedrock_model_id=%s | region=%s | credential_source=%s | max_tokens=%d | temperature=%.3f",
+                model_name,
+                resolved_model_id,
+                resolved_region,
+                "AWS_BEDROCK_*" if access_key is not None else "default AWS chain",
+                max_tokens,
+                temperature,
+            )
         request_kwargs: dict[str, object] = {
             "model": resolved_model_id,
             "max_tokens": max_tokens,
@@ -182,19 +194,31 @@ async def ask_bedrock(
     request_duration_seconds = time.perf_counter() - request_started_at
     answer = extract_text_blocks(response)
     usage = response.usage
-    logger.info(
-        "Completed Bedrock request | model=%s | resolved_bedrock_model_id=%s | region=%s | stop_reason=%s | input_tokens=%s | output_tokens=%s | cache_creation_input_tokens=%s | cache_read_input_tokens=%s | duration_seconds=%.3f",
-        model_name,
-        response.model,
-        resolved_region,
-        response.stop_reason,
-        usage.input_tokens,
-        usage.output_tokens,
-        usage.cache_creation_input_tokens,
-        usage.cache_read_input_tokens,
-        request_duration_seconds,
+    bedrock_response = BedrockResponse(
+        text=answer,
+        resolved_model_id=response.model,
+        region=resolved_region,
+        stop_reason=response.stop_reason,
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
+        cache_creation_input_tokens=usage.cache_creation_input_tokens,
+        cache_read_input_tokens=usage.cache_read_input_tokens,
+        duration_seconds=request_duration_seconds,
     )
-    return answer
+    if log_response_summary:
+        logger.info(
+            "Completed Bedrock request | model=%s | resolved_bedrock_model_id=%s | region=%s | stop_reason=%s | input_tokens=%s | output_tokens=%s | cache_creation_input_tokens=%s | cache_read_input_tokens=%s | duration_seconds=%.3f",
+            model_name,
+            bedrock_response.resolved_model_id,
+            bedrock_response.region,
+            bedrock_response.stop_reason,
+            bedrock_response.input_tokens,
+            bedrock_response.output_tokens,
+            bedrock_response.cache_creation_input_tokens,
+            bedrock_response.cache_read_input_tokens,
+            bedrock_response.duration_seconds,
+        )
+    return bedrock_response
 
 
 @click.command()
@@ -265,7 +289,7 @@ def cli(
     for logger_name in NOISY_LOGGERS:
         logging.getLogger(logger_name).setLevel(logging.WARNING)
     try:
-        answer = asyncio.run(
+        response = asyncio.run(
             ask_bedrock(
                 model_name=model_name.lower(),
                 region=resolved_region,
@@ -289,7 +313,7 @@ def cli(
             "Bedrock rate limited the request. This CLI only sends one request "
             "at a time, so retry later or lower your overall account traffic."
         ) from exc
-    click.echo(answer)
+    click.echo(response.text)
 
 
 if __name__ == "__main__":

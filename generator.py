@@ -9,6 +9,8 @@ import click
 from pydantic import ValidationError
 
 from aws_utils import AWS_BEDROCK_SUPPORTED_MODEL_IDS
+from aws_utils import BedrockResponse
+from aws_utils import NOISY_LOGGERS
 from aws_utils import ask_bedrock
 from entities import Pass1Record
 from entities import Pass2Record
@@ -102,14 +104,14 @@ async def generate_pass2_record(
     max_tokens: int,
     temperature: float,
     timeout_seconds: float,
-) -> Pass2Record:
+) -> tuple[Pass2Record, BedrockResponse]:
     output_schema = build_pass2_output_schema(pass1_record)
     prompt = build_generation_prompt(pass1_record)
     attempt_max_tokens = max_tokens
-    response_text = ""
+    bedrock_response: BedrockResponse | None = None
 
     for attempt_number in (1, 2):
-        response_text = await ask_bedrock(
+        bedrock_response = await ask_bedrock(
             model_name=model_name,
             region=region,
             profile=profile,
@@ -119,9 +121,10 @@ async def generate_pass2_record(
             system_prompt=SYSTEM_PROMPT,
             json_output_schema=output_schema,
             prompt=prompt,
+            log_response_summary=False,
         )
         try:
-            pass2_payload = json.loads(response_text, strict=False)
+            pass2_payload = json.loads(bedrock_response.text, strict=False)
             pass2_record = Pass2Record.model_validate(pass2_payload)
         except (ValidationError, json.JSONDecodeError) as exc:
             if attempt_number == 1:
@@ -138,14 +141,14 @@ async def generate_pass2_record(
                 continue
             raise ValueError(
                 "Bedrock response did not parse as Pass2Record:\n"
-                f"{response_text}\n\n"
+                f"{bedrock_response.text}\n\n"
                 f"Schema used:\n{json.dumps(output_schema, indent=2)}"
             ) from exc
         assert pass2_record.id == pass1_record.id, "Pass2Record.id must match Pass1Record.id."
         assert pass2_record.question == pass1_record.question, (
             "Pass2Record.question must match Pass1Record.question."
         )
-        return pass2_record
+        return pass2_record, bedrock_response
 
     raise AssertionError("Pass2 generation retry loop must return or raise.")
 
@@ -161,8 +164,10 @@ async def main(
     timeout_seconds: float,
 ) -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+    for logger_name in NOISY_LOGGERS:
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
     pass1_record = Pass1Record.model_validate_json(pass1_json)
-    pass2_record = await generate_pass2_record(
+    pass2_record, _ = await generate_pass2_record(
         pass1_record,
         model_name=model_name,
         region=region,
