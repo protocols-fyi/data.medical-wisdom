@@ -42,10 +42,13 @@ def sanitize_json_schema(node: dict[str, Any], definitions: dict[str, Any]) -> d
             "additionalProperties": bool(node.get("additionalProperties", False)),
         }
     if node_type == "array":
-        return {
+        array_schema = {
             "type": "array",
             "items": sanitize_json_schema(node["items"], definitions),
         }
+        if "maxItems" in node:
+            array_schema["maxItems"] = node["maxItems"]
+        return array_schema
     if node_type == "integer":
         minimum = node.get("minimum")
         maximum = node.get("maximum")
@@ -63,19 +66,19 @@ def sanitize_json_schema(node: dict[str, Any], definitions: dict[str, Any]) -> d
 def build_pass2_output_schema(pass1_record: Pass1Record) -> dict[str, Any]:
     # Bedrock structured output needs a schema specialized to this Pass1Record:
     # start from the Pydantic Pass2Record schema, reduce it to Anthropic's
-    # supported JSON Schema subset, then constrain id and question so the model
-    # must echo the input record instead of inventing or rewording them.
+    # supported JSON Schema subset, then remove id/question so the model does
+    # not have to re-emit long source text with embedded newlines or quotes.
+    _ = pass1_record
     generated_schema = Pass2Record.model_json_schema()
     definitions = generated_schema.get("$defs", {})
     schema = sanitize_json_schema(generated_schema, definitions)
-    schema["properties"]["id"] = {
-        "type": "string",
-        "enum": [pass1_record.id],
-    }
-    schema["properties"]["question"] = {
-        "type": "string",
-        "enum": [pass1_record.question],
-    }
+    del schema["properties"]["id"]
+    del schema["properties"]["question"]
+    schema["required"] = [
+        field_name
+        for field_name in schema["required"]
+        if field_name not in {"id", "question"}
+    ]
     return schema
 
 
@@ -87,7 +90,7 @@ def build_generation_prompt(pass1_record: Pass1Record) -> str:
         "context and situational awareness. You should also provide concise "
         "explanations on why you want to ask each follow-up question and what "
         "the answer mean.\n"
-        "Use the schema constraints instead of rewording the source fields.\n"
+        "Do not repeat the id or question fields; they will be filled in by the caller.\n"
         "Prefer specific missing context over generic filler, and keep the "
         "record compact while still telling the full story of why each "
         "follow-up matters.\n\n"
@@ -125,6 +128,8 @@ async def generate_pass2_record(
         )
         try:
             pass2_payload = json.loads(bedrock_response.text, strict=False)
+            pass2_payload["id"] = pass1_record.id
+            pass2_payload["question"] = pass1_record.question
             pass2_record = Pass2Record.model_validate(pass2_payload)
         except (ValidationError, json.JSONDecodeError) as exc:
             if attempt_number == 1:
