@@ -42,13 +42,10 @@ def sanitize_json_schema(node: dict[str, Any], definitions: dict[str, Any]) -> d
             "additionalProperties": bool(node.get("additionalProperties", False)),
         }
     if node_type == "array":
-        array_schema = {
+        return {
             "type": "array",
             "items": sanitize_json_schema(node["items"], definitions),
         }
-        if "maxItems" in node:
-            array_schema["maxItems"] = node["maxItems"]
-        return array_schema
     if node_type == "integer":
         minimum = node.get("minimum")
         maximum = node.get("maximum")
@@ -91,6 +88,7 @@ def build_generation_prompt(pass1_record: Pass1Record) -> str:
         "explanations on why you want to ask each follow-up question and what "
         "the answer mean.\n"
         "Do not repeat the id or question fields; they will be filled in by the caller.\n"
+        "Return 3 to 7 follow-up questions, ordered from highest to lowest information gain.\n"
         "Prefer specific missing context over generic filler, and keep the "
         "record compact while still telling the full story of why each "
         "follow-up matters.\n\n"
@@ -130,6 +128,16 @@ async def generate_pass2_record(
             pass2_payload = json.loads(bedrock_response.text, strict=False)
             pass2_payload["id"] = pass1_record.id
             pass2_payload["question"] = pass1_record.question
+            if (
+                isinstance(pass2_payload.get("follow_ups"), list)
+                and len(pass2_payload["follow_ups"]) > 7
+            ):
+                logger.warning(
+                    "Trimming excess follow_ups before validation | id=%s | original_count=%d",
+                    pass1_record.id,
+                    len(pass2_payload["follow_ups"]),
+                )
+                pass2_payload["follow_ups"] = pass2_payload["follow_ups"][:7]
             pass2_record = Pass2Record.model_validate(pass2_payload)
         except (ValidationError, json.JSONDecodeError) as exc:
             if attempt_number == 1:
