@@ -57,7 +57,7 @@ class Pass2Record(BaseModel):
     question: NonEmptyString
     difficulty_level: Annotated[
         Score,
-        Field(description="Difficulty of answering the question well from the raw question alone."),
+        Field(description="Skill level of answering the question well. 1 is lay person; 5 is MD in the relevant field."),
     ]
     follow_ups: Annotated[
         list[FollowUpQuestion],
