@@ -13,6 +13,7 @@ import asyncio
 import logging
 import os
 import time
+from typing import Any
 
 import boto3
 import click
@@ -30,7 +31,7 @@ DEFAULT_MAX_TOKENS = 256
 DEFAULT_TEMPERATURE = 0.0
 DEFAULT_TIMEOUT_SECONDS = 120.0
 AWS_BEDROCK_SUPPORTED_MODEL_IDS = {
-    "anthropic-haiku-4.5": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "anthropic-haiku-4.5": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
     "anthropic-sonnet-4.6": "us.anthropic.claude-sonnet-4-6",
     "anthropic-opus-4.6": "us.anthropic.claude-opus-4-6-v1",
 }
@@ -111,6 +112,7 @@ async def ask_bedrock(
     messages: list[dict[str, str]] | None = None,
     system_prompt: str = "",
     top_p: float | None = None,
+    json_output_schema: dict[str, Any] | None = None,
 ) -> str:
     assert model_name in AWS_BEDROCK_SUPPORTED_MODEL_IDS, f"Unsupported Bedrock model: {model_name}"
     resolved_model_id = AWS_BEDROCK_SUPPORTED_MODEL_IDS[model_name]
@@ -169,6 +171,13 @@ async def ask_bedrock(
             request_kwargs["system"] = normalized_system_prompt
         if top_p is not None:
             request_kwargs["top_p"] = top_p
+        if json_output_schema is not None:
+            request_kwargs["output_config"] = {
+                "format": {
+                    "type": "json_schema",
+                    "schema": json_output_schema,
+                }
+            }
         response = await client.messages.create(**request_kwargs)
     request_duration_seconds = time.perf_counter() - request_started_at
     answer = extract_text_blocks(response)

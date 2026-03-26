@@ -28,9 +28,18 @@ class Pass1Record(BaseModel):
 class FollowUpQuestion(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    question: NonEmptyString
-    thinking: NonEmptyString
-    weight: Score
+    question: Annotated[
+        NonEmptyString,
+        Field(description="A clarifying follow-up question that asks for missing context."),
+    ]
+    thinking: Annotated[
+        NonEmptyString,
+        Field(description="A short explanation of why this follow-up question is useful."),
+    ]
+    weight: Annotated[
+        Score,
+        Field(description="Expected information gain from this follow-up question on a 1 to 5 scale."),
+    ]
 
 
 class Pass2Record(BaseModel):

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-import argparse
 import asyncio
+import json
+import logging
+from typing import Any
 
+import click
 from pydantic import ValidationError
 
 from aws_utils import AWS_BEDROCK_SUPPORTED_MODEL_IDS
@@ -12,11 +15,81 @@ from entities import Pass2Record
 from samples import PASS1_RECORD_EXAMPLE_JSON
 
 SYSTEM_PROMPT = """
-You are generating structured annotations for a consumer health question dataset.
-Return exactly one JSON object and nothing else.
-Do not wrap the JSON in markdown fences.
-Keep the same id and question from the provided input record.
+You generate high-information-gain clarification questions for consumer health enquiries.
+Be clinically cautious, prioritize the missing context that most changes the answer, and follow the provided JSON schema exactly.
 """.strip()
+
+
+def sanitize_json_schema(node: dict[str, Any], definitions: dict[str, Any]) -> dict[str, Any]:
+    if "$ref" in node:
+        reference = node["$ref"]
+        assert reference.startswith("#/$defs/"), f"Unsupported schema reference: {reference}"
+        definition_name = reference.removeprefix("#/$defs/")
+        return sanitize_json_schema(definitions[definition_name], definitions)
+
+    node_type = node.get("type")
+    if node_type == "object":
+        return {
+            "type": "object",
+            "properties": {
+                key: sanitize_json_schema(value, definitions)
+                for key, value in node["properties"].items()
+            },
+            "required": list(node.get("required", [])),
+            "additionalProperties": bool(node.get("additionalProperties", False)),
+        }
+    if node_type == "array":
+        return {
+            "type": "array",
+            "items": sanitize_json_schema(node["items"], definitions),
+        }
+    if node_type == "integer":
+        minimum = node.get("minimum")
+        maximum = node.get("maximum")
+        if minimum == 1 and maximum == 5:
+            return {"type": "integer", "enum": [1, 2, 3, 4, 5]}
+        return {"type": "integer"}
+    if node_type == "string":
+        if "const" in node:
+            return {"type": "string", "enum": [node["const"]]}
+        return {"type": "string"}
+    assert "const" not in node, f"Unsupported schema node without type: {node}"
+    return {"type": node_type}
+
+
+def build_pass2_output_schema(pass1_record: Pass1Record) -> dict[str, Any]:
+    # Bedrock structured output needs a schema specialized to this Pass1Record:
+    # start from the Pydantic Pass2Record schema, reduce it to Anthropic's
+    # supported JSON Schema subset, then constrain id and question so the model
+    # must echo the input record instead of inventing or rewording them.
+    generated_schema = Pass2Record.model_json_schema()
+    definitions = generated_schema.get("$defs", {})
+    schema = sanitize_json_schema(generated_schema, definitions)
+    schema["properties"]["id"] = {
+        "type": "string",
+        "enum": [pass1_record.id],
+    }
+    schema["properties"]["question"] = {
+        "type": "string",
+        "enum": [pass1_record.question],
+    }
+    return schema
+
+
+def build_generation_prompt(pass1_record: Pass1Record) -> str:
+    return (
+        "Your job is to carefully consider the question asked in Pass1Record, "
+        "ultrathink about what are the highest information-gain follow-up "
+        "questions you can ask to significantly reduce ambiguity, improve "
+        "context and situational awareness. You should also provide concise "
+        "explanations on why you want to ask each follow-up question and what "
+        "the answer mean.\n"
+        "Use the schema constraints instead of rewording the source fields.\n"
+        "Prefer specific missing context over generic filler, and keep the "
+        "record compact while still telling the full story of why each "
+        "follow-up matters.\n\n"
+        f"Pass1Record JSON:\n{pass1_record.model_dump_json()}"
+    )
 
 
 async def generate_pass2_record(
@@ -29,6 +102,8 @@ async def generate_pass2_record(
     temperature: float,
     timeout_seconds: float,
 ) -> Pass2Record:
+    output_schema = build_pass2_output_schema(pass1_record)
+    prompt = build_generation_prompt(pass1_record)
     response_text = await ask_bedrock(
         model_name=model_name,
         region=region,
@@ -37,24 +112,17 @@ async def generate_pass2_record(
         temperature=temperature,
         timeout_seconds=timeout_seconds,
         system_prompt=SYSTEM_PROMPT,
-        prompt=(
-            "Convert this Pass1Record into a Pass2Record.\n"
-            "Requirements:\n"
-            "- Keep id exactly unchanged.\n"
-            "- Keep question exactly unchanged.\n"
-            "- Set difficulty_level to an integer from 1 to 5.\n"
-            "- Produce 3 to 7 follow-up questions.\n"
-            "- Each follow-up must contain question, thinking, and weight.\n"
-            "- Each weight must be an integer from 1 to 5.\n"
-            "- Follow-up questions must be distinct after lowercasing and collapsing whitespace.\n"
-            "- Return JSON only.\n\n"
-            f"Pass1Record JSON:\n{pass1_record.model_dump_json()}"
-        ),
+        json_output_schema=output_schema,
+        prompt=prompt,
     )
     try:
         pass2_record = Pass2Record.model_validate_json(response_text)
     except ValidationError as exc:
-        raise ValueError(f"Bedrock response did not parse as Pass2Record:\n{response_text}") from exc
+        raise ValueError(
+            "Bedrock response did not parse as Pass2Record:\n"
+            f"{response_text}\n\n"
+            f"Schema used:\n{json.dumps(output_schema, indent=2)}"
+        ) from exc
     assert pass2_record.id == pass1_record.id, "Pass2Record.id must match Pass1Record.id."
     assert pass2_record.question == pass1_record.question, (
         "Pass2Record.question must match Pass1Record.question."
@@ -62,63 +130,101 @@ async def generate_pass2_record(
     return pass2_record
 
 
-async def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Generate a Pass2Record from a Pass1Record with Claude Haiku on Bedrock."
-    )
-    parser.add_argument(
-        "--pass1-json",
-        default=PASS1_RECORD_EXAMPLE_JSON,
-        help="Pass1Record JSON. Defaults to the sample payload from samples.py.",
-    )
-    parser.add_argument(
-        "--model",
-        dest="model_name",
-        choices=sorted(AWS_BEDROCK_SUPPORTED_MODEL_IDS),
-        default="anthropic-haiku-4.5",
-        help="Bedrock model shorthand defined in aws_utils.py.",
-    )
-    parser.add_argument(
-        "--region",
-        default=None,
-        help="AWS region override. Defaults to AWS_REGION or AWS_DEFAULT_REGION.",
-    )
-    parser.add_argument(
-        "--profile",
-        default=None,
-        help="AWS profile override passed through to aws_utils.ask_bedrock().",
-    )
-    parser.add_argument(
-        "--max-tokens",
-        type=int,
-        default=1024,
-        help="Maximum number of output tokens to request.",
-    )
-    parser.add_argument(
-        "--temperature",
-        type=float,
-        default=0.0,
-        help="Sampling temperature for the request.",
-    )
-    parser.add_argument(
-        "--timeout-seconds",
-        type=float,
-        default=120.0,
-        help="Request timeout in seconds.",
-    )
-    args = parser.parse_args()
-    pass1_record = Pass1Record.model_validate_json(args.pass1_json)
+async def main(
+    *,
+    pass1_json: str,
+    model_name: str,
+    region: str | None,
+    profile: str | None,
+    max_tokens: int,
+    temperature: float,
+    timeout_seconds: float,
+) -> None:
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    pass1_record = Pass1Record.model_validate_json(pass1_json)
     pass2_record = await generate_pass2_record(
         pass1_record,
-        model_name=args.model_name,
-        region=args.region,
-        profile=args.profile,
-        max_tokens=args.max_tokens,
-        temperature=args.temperature,
-        timeout_seconds=args.timeout_seconds,
+        model_name=model_name,
+        region=region,
+        profile=profile,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        timeout_seconds=timeout_seconds,
     )
-    print(pass2_record.model_dump_json(indent=2))
+    click.echo(pass2_record.model_dump_json(indent=2))
+
+
+@click.command()
+@click.option(
+    "--pass1-json",
+    type=str,
+    default=PASS1_RECORD_EXAMPLE_JSON,
+    show_default=True,
+    help="Pass1Record JSON. Defaults to the sample payload from samples.py.",
+)
+@click.option(
+    "--model",
+    "model_name",
+    type=click.Choice(sorted(AWS_BEDROCK_SUPPORTED_MODEL_IDS), case_sensitive=False),
+    default="anthropic-haiku-4.5",
+    show_default=True,
+    help="Bedrock model shorthand defined in aws_utils.py.",
+)
+@click.option(
+    "--region",
+    type=str,
+    default=None,
+    help="AWS region override. Defaults to AWS_REGION or AWS_DEFAULT_REGION.",
+)
+@click.option(
+    "--profile",
+    type=str,
+    default=None,
+    help="AWS profile override passed through to aws_utils.ask_bedrock().",
+)
+@click.option(
+    "--max-tokens",
+    type=click.IntRange(min=1),
+    default=1024,
+    show_default=True,
+    help="Maximum number of output tokens to request.",
+)
+@click.option(
+    "--temperature",
+    type=click.FloatRange(min=0.0, max=1.0),
+    default=0.0,
+    show_default=True,
+    help="Sampling temperature for the request.",
+)
+@click.option(
+    "--timeout-seconds",
+    type=click.FloatRange(min=1.0),
+    default=120.0,
+    show_default=True,
+    help="Request timeout in seconds.",
+)
+def cli(
+    pass1_json: str,
+    model_name: str,
+    region: str | None,
+    profile: str | None,
+    max_tokens: int,
+    temperature: float,
+    timeout_seconds: float,
+) -> None:
+    """Generate a Pass2Record from a Pass1Record with Claude Haiku on Bedrock."""
+    asyncio.run(
+        main(
+            pass1_json=pass1_json,
+            model_name=model_name.lower(),
+            region=region,
+            profile=profile,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            timeout_seconds=timeout_seconds,
+        )
+    )
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    cli()
