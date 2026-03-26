@@ -26,6 +26,7 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 from aws_utils import AWS_BEDROCK_SUPPORTED_MODEL_IDS
 from aws_utils import NOISY_LOGGERS
 from entities import Pass1Record
+from entities import Pass2Record
 from generator import generate_pass2_record
 
 logger = logging.getLogger(__name__)
@@ -113,30 +114,74 @@ async def main() -> None:
         )
         output_path = args.input_path.with_name(f"{suffixless_name}.pass2.jsonl")
     assert output_path != args.input_path, "--output-path must differ from --input-path."
-    if output_path.exists():
-        assert args.overwrite, (
-            f"Output file already exists: {output_path}. Pass --overwrite to replace it."
-        )
 
     with args.input_path.open("r", encoding="utf-8") as input_file:
         total_records = sum(1 for _ in input_file)
     assert total_records > 0, f"Input file is empty: {args.input_path}"
 
+    completed_records = 0
+    output_mode = "w"
+    if output_path.exists() and not args.overwrite:
+        output_mode = "a"
+        with (
+            args.input_path.open("r", encoding="utf-8") as input_file,
+            output_path.open("r", encoding="utf-8") as existing_output_file,
+        ):
+            for completed_records, output_line in enumerate(existing_output_file, start=1):
+                input_line = input_file.readline()
+                assert input_line, (
+                    f"Output file has more lines than input file at output line {completed_records}: {output_path}"
+                )
+                stripped_input_line = input_line.strip()
+                stripped_output_line = output_line.strip()
+                assert stripped_input_line, f"Blank JSONL line at input line {completed_records}."
+                assert stripped_output_line, f"Blank JSONL line at output line {completed_records}."
+                try:
+                    pass1_record = Pass1Record.model_validate_json(stripped_input_line)
+                except ValidationError as exc:
+                    raise ValueError(
+                        f"Invalid Pass1Record at input line {completed_records}: {exc}\n{stripped_input_line}"
+                    ) from exc
+                try:
+                    pass2_record = Pass2Record.model_validate_json(stripped_output_line)
+                except ValidationError as exc:
+                    raise ValueError(
+                        f"Invalid Pass2Record at output line {completed_records}: {exc}\n{stripped_output_line}"
+                    ) from exc
+                assert pass2_record.id == pass1_record.id, (
+                    f"Output id mismatch at line {completed_records}: {pass2_record.id} != {pass1_record.id}"
+                )
+                assert pass2_record.question == pass1_record.question, (
+                    f"Output question mismatch at line {completed_records}."
+                )
+        assert completed_records <= total_records, (
+            f"Output file has more lines than input file: {output_path}"
+        )
+
     started_at = time.perf_counter()
     logger.info(
-        "Starting pass-2 generation | input=%s | output=%s | total_records=%d | model=%s",
+        "Starting pass-2 generation | input=%s | output=%s | total_records=%d | completed_records=%d | model=%s",
         args.input_path,
         output_path,
         total_records,
+        completed_records,
         args.model_name,
     )
+    if completed_records == total_records:
+        logger.info(
+            "Output already complete; nothing to do | output=%s | total_records=%d",
+            output_path,
+            total_records,
+        )
+        return
 
     with logging_redirect_tqdm():
         with (
             args.input_path.open("r", encoding="utf-8") as input_file,
-            output_path.open("w", encoding="utf-8") as output_file,
+            output_path.open(output_mode, encoding="utf-8") as output_file,
             tqdm(
                 total=total_records,
+                initial=completed_records,
                 desc="pass2",
                 unit="record",
                 dynamic_ncols=True,
@@ -144,6 +189,8 @@ async def main() -> None:
             ) as progress,
         ):
             for line_number, line in enumerate(input_file, start=1):
+                if line_number <= completed_records:
+                    continue
                 stripped_line = line.strip()
                 assert stripped_line, f"Blank JSONL line at input line {line_number}."
                 try:
