@@ -209,3 +209,6 @@ __marimo__/
 
 # Local run artifacts
 run/
+
+# Raw downloaded datasets
+datasets.original/
