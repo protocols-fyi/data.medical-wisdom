@@ -27,25 +27,10 @@
 
 ## Lint And `noqa` Policy
 
+- Use `uvx suoyin *.py` to get a listing of all classes, structures and functions in each file. When you are about to make changes, consult the latest listing and see if you can reuse/refactor existing constructs before creating your own.
 - Prefer Ruff configuration in `pyproject.toml` over inline `# noqa` comments.
 - For known file-level import-order exceptions (for example, runtime env bootstrap before imports), use `[tool.ruff.lint.per-file-ignores]` (for example `E402`) instead of annotating each import line.
 - Treat inline `# noqa` as a last resort only when the suppression is truly line-specific and cannot be expressed in config.
 - Any inline suppression must include the specific rule code and a short reason.
 - For side-effect imports, prefer explicit usage (for example `_ = unsloth`) instead of `# noqa: F401` where practical.
 - After lint-related edits, run: `uv run --env-file .env -m ruff check`.
-
-## Experiment Config Structure
-
-- Store runnable experiment configs under `experiments/<experiment-name>/config.yaml`.
-- `make train` should resolve the default config from the most recently modified `experiments/*/config.yaml`.
-- When creating a new experiment, make the folder name descriptive and keep `training.model_name` aligned with that experiment.
-- When an experiment writes `experiments/<name>/output.tsv`, keep it tab-separated with a stable header row and no extra prose.
-- Existing per-step metric TSVs under `run/*.tsv` use this same schema, and new experiment outputs should match it.
-- Current per-step metric TSVs use these columns. For each signal, e.g. discovery/successCriteria/failureCriteria
-  - `step`: training step or checkpoint number.
-  - `*_mean`: mean discovery score across rollouts for that scenario at that step.
-  - `*_max`: best rollout score at that step.
-  - `*_min`: worst rollout score at that step.
-  - `*_std`: standard deviation of rollout scores at that step.
-  - `*_entropy`: mean training entropy recorded for that step.
-- For quick graphs, prefer `gnuplot` over ad hoc scripts. 

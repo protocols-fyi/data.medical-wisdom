@@ -5,13 +5,24 @@ description = "Local notebook environment for the medical reward score playgroun
 readme = "SPEC.md"
 requires-python = ">=3.11"
 dependencies = [
+    "anthropic>=0.52.0",
+    "boto3>=1.40.0",
+    "click>=8.2.1",
     "ipykernel>=6.29.5",
     "jupyterlab>=4.4.0",
     "numpy>=2.3.0",
     "pandas>=2.3.0",
+    "ruff>=0.12.12",
     "scikit-learn>=1.7.0",
     "scipy>=1.16.0",
 ]
 
 [tool.uv]
 package = false
+
+[dependency-groups]
+dev = [
+    "ruff>=0.9.10",
+    "ty>=0.0.1a29",
+    "pytest>=9.0.2",
+]

@@ -1,7 +1,7 @@
 """Minimal Anthropic Bedrock CLI for one-off remote model checks.
 
 Usage:
-    uv run --env-file .env aws_utils.py --model anthropic-haiku-4.5
+    uv run --env-file .env aws_utils.py --model anthropic-haiku-4.5 --limit 1
     uv run --env-file .env aws_utils.py --model anthropic-sonnet-4.6 --region us-west-2
     uv run --env-file .env aws_utils.py --model anthropic-opus-4.6 --prompt "who is the mayor of Dunedin, New Zealand"
 
@@ -10,6 +10,7 @@ request because this box is rate limited by Bedrock.
 """
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -53,8 +54,13 @@ def resolve_bedrock_credentials() -> tuple[str | None, str | None, str | None]:
     access_key = os.environ.get("AWS_BEDROCK_ACCESS_KEY_ID", "").strip()
     secret_key = os.environ.get("AWS_BEDROCK_SECRET_ACCESS_KEY", "").strip()
     session_token = os.environ.get("AWS_BEDROCK_SESSION_TOKEN", "").strip() or None
+    if not access_key and not secret_key:
+        access_key = os.environ.get("AWS_ACCESS_KEY_ID", "").strip()
+        secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY", "").strip()
+        session_token = os.environ.get("AWS_SESSION_TOKEN", "").strip() or None
     assert bool(access_key) == bool(secret_key), (
-        "Set both AWS_BEDROCK_ACCESS_KEY_ID and AWS_BEDROCK_SECRET_ACCESS_KEY, or neither."
+        "Set both AWS_BEDROCK_ACCESS_KEY_ID and AWS_BEDROCK_SECRET_ACCESS_KEY, or set "
+        "both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, or neither."
     )
     if access_key and secret_key:
         return access_key, secret_key, session_token
@@ -239,6 +245,18 @@ async def ask_bedrock(
     show_default=True,
     help="Request timeout in seconds.",
 )
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Print request configuration and exit without calling Bedrock.",
+)
+@click.option(
+    "--limit",
+    type=click.IntRange(min=1),
+    default=1,
+    show_default=True,
+    help="Maximum prompts to send. This CLI supports exactly one prompt.",
+)
 def cli(
     model_name: str,
     prompt: str,
@@ -247,10 +265,13 @@ def cli(
     max_tokens: int,
     temperature: float,
     timeout_seconds: float,
+    dry_run: bool,
+    limit: int,
 ) -> None:
     """Send one prompt to Claude on Bedrock using a fixed model."""
     normalized_prompt = prompt.strip()
     assert normalized_prompt, "--prompt must be non-empty."
+    assert limit == 1, "--limit must be 1 because aws_utils.py only sends one prompt."
     normalized_profile = profile.strip() if profile is not None else None
     if normalized_profile is not None:
         assert normalized_profile, "--profile must be non-empty when set."
@@ -259,6 +280,30 @@ def cli(
     for logger_name in NOISY_LOGGERS:
         logging.getLogger(logger_name).setLevel(logging.WARNING)
     logger.info("Logging Bedrock CLI output to %s", run_log_path)
+    logger.info(
+        "Configured one-off Bedrock CLI | model=%s | region=%s | max_tokens=%d | temperature=%.3f | dry_run=%s",
+        model_name.lower(),
+        resolved_region,
+        max_tokens,
+        temperature,
+        dry_run,
+    )
+    if dry_run:
+        click.echo(
+            json.dumps(
+                {
+                    "model": model_name.lower(),
+                    "region": resolved_region,
+                    "maxTokens": max_tokens,
+                    "temperature": temperature,
+                    "timeoutSeconds": timeout_seconds,
+                    "prompt": normalized_prompt,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return
     try:
         answer = asyncio.run(
             ask_bedrock(
