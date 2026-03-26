@@ -30,9 +30,12 @@ while true; do
 
   while true; do
     printf '[%s] invoking codex resume | thread_id=%s | checkpoint=%s\n' "$(date -Iseconds)" "$CODEX_THREAD_ID" "$checkpoint" >> "$WATCHDOG_LOG"
-    codex exec resume \
+    # `-C/--cd` is an option on `codex exec`, not on the `resume` subcommand.
+    # Keep it before `resume` or the CLI exits with usage error code 2.
+    codex exec \
       --dangerously-bypass-approvals-and-sandbox \
       -C "$REPO_DIR" \
+      resume \
       -o "$LAST_MESSAGE_LOG" \
       "$CODEX_THREAD_ID" \
       - >> "$CODEX_LOG" 2>&1 <<EOF
