@@ -5,6 +5,9 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from samples import PASS1_RECORD_EXAMPLE_JSON
+from samples import PASS2_RECORD_EXAMPLE_JSON
+
 NonEmptyString = Annotated[str, Field(min_length=1)]
 Score = Annotated[int, Field(ge=1, le=5)]
 
@@ -53,31 +56,8 @@ class Pass2Record(BaseModel):
 
 
 def main() -> None:
-    pass1_record_example_json = """{"id":"9fc12ccbb5d32d43ea566549274bb05319ac3a14d87931bebf7f10cab1891896","question":"How serious is atrial fibrillation?"}"""
-    pass2_record_example_json = """{
-  "id": "9fc12ccbb5d32d43ea566549274bb05319ac3a14d87931bebf7f10cab1891896",
-  "question": "How serious is atrial fibrillation?",
-  "difficulty_level": 2,
-  "follow_ups": [
-    {
-      "question": "Is this about you or someone else right now, and are there any red-flag symptoms such as chest pain, severe shortness of breath, fainting, confusion, weakness or numbness, or trouble speaking or seeing?",
-      "thinking": "This separates a possible emergency from a routine information request. Urgency changes the next step entirely, so it has the highest information gain.",
-      "weight": 5
-    },
-    {
-      "question": "Has atrial fibrillation already been diagnosed, or are you asking because of a new irregular heartbeat or new symptoms?",
-      "thinking": "This distinguishes a general education question from a new possible diagnosis. The answer changes what context is missing and what follow-up matters most.",
-      "weight": 4
-    },
-    {
-      "question": "What other health conditions, medications, or blood thinners are involved?",
-      "thinking": "Comorbidities and current treatment strongly affect risk framing and what information would be most useful next.",
-      "weight": 5
-    }
-  ]
-}"""
-    pass1_record = Pass1Record.model_validate_json(pass1_record_example_json)
-    pass2_record = Pass2Record.model_validate_json(pass2_record_example_json)
+    pass1_record = Pass1Record.model_validate_json(PASS1_RECORD_EXAMPLE_JSON)
+    pass2_record = Pass2Record.model_validate_json(PASS2_RECORD_EXAMPLE_JSON)
     print(pass1_record.model_dump_json())
     print(pass2_record.model_dump_json(indent=2))
 
