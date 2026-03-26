@@ -14,6 +14,7 @@ from entities import Pass1Record
 from entities import Pass2Record
 from samples import PASS1_RECORD_EXAMPLE_JSON
 
+logger = logging.getLogger(__name__)
 SYSTEM_PROMPT = """
 You generate high-information-gain clarification questions for consumer health enquiries.
 Be clinically cautious, prioritize the missing context that most changes the answer, and follow the provided JSON schema exactly.
@@ -104,31 +105,49 @@ async def generate_pass2_record(
 ) -> Pass2Record:
     output_schema = build_pass2_output_schema(pass1_record)
     prompt = build_generation_prompt(pass1_record)
-    response_text = await ask_bedrock(
-        model_name=model_name,
-        region=region,
-        profile=profile,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        timeout_seconds=timeout_seconds,
-        system_prompt=SYSTEM_PROMPT,
-        json_output_schema=output_schema,
-        prompt=prompt,
-    )
-    try:
-        pass2_payload = json.loads(response_text, strict=False)
-        pass2_record = Pass2Record.model_validate(pass2_payload)
-    except (ValidationError, json.JSONDecodeError) as exc:
-        raise ValueError(
-            "Bedrock response did not parse as Pass2Record:\n"
-            f"{response_text}\n\n"
-            f"Schema used:\n{json.dumps(output_schema, indent=2)}"
-        ) from exc
-    assert pass2_record.id == pass1_record.id, "Pass2Record.id must match Pass1Record.id."
-    assert pass2_record.question == pass1_record.question, (
-        "Pass2Record.question must match Pass1Record.question."
-    )
-    return pass2_record
+    attempt_max_tokens = max_tokens
+    response_text = ""
+
+    for attempt_number in (1, 2):
+        response_text = await ask_bedrock(
+            model_name=model_name,
+            region=region,
+            profile=profile,
+            max_tokens=attempt_max_tokens,
+            temperature=temperature,
+            timeout_seconds=timeout_seconds,
+            system_prompt=SYSTEM_PROMPT,
+            json_output_schema=output_schema,
+            prompt=prompt,
+        )
+        try:
+            pass2_payload = json.loads(response_text, strict=False)
+            pass2_record = Pass2Record.model_validate(pass2_payload)
+        except (ValidationError, json.JSONDecodeError) as exc:
+            if attempt_number == 1:
+                retry_max_tokens = max(attempt_max_tokens * 2, 2048)
+                logger.warning(
+                    "Retrying Pass2Record generation after malformed model output | id=%s | attempt=%d | max_tokens=%d | retry_max_tokens=%d | error=%s",
+                    pass1_record.id,
+                    attempt_number,
+                    attempt_max_tokens,
+                    retry_max_tokens,
+                    exc,
+                )
+                attempt_max_tokens = retry_max_tokens
+                continue
+            raise ValueError(
+                "Bedrock response did not parse as Pass2Record:\n"
+                f"{response_text}\n\n"
+                f"Schema used:\n{json.dumps(output_schema, indent=2)}"
+            ) from exc
+        assert pass2_record.id == pass1_record.id, "Pass2Record.id must match Pass1Record.id."
+        assert pass2_record.question == pass1_record.question, (
+            "Pass2Record.question must match Pass1Record.question."
+        )
+        return pass2_record
+
+    raise AssertionError("Pass2 generation retry loop must return or raise.")
 
 
 async def main(
