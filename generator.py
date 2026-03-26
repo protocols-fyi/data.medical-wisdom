@@ -116,8 +116,9 @@ async def generate_pass2_record(
         prompt=prompt,
     )
     try:
-        pass2_record = Pass2Record.model_validate_json(response_text)
-    except ValidationError as exc:
+        pass2_payload = json.loads(response_text, strict=False)
+        pass2_record = Pass2Record.model_validate(pass2_payload)
+    except (ValidationError, json.JSONDecodeError) as exc:
         raise ValueError(
             "Bedrock response did not parse as Pass2Record:\n"
             f"{response_text}\n\n"
