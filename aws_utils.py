@@ -21,6 +21,7 @@ import click
 from anthropic import APITimeoutError
 from anthropic import AsyncAnthropicBedrock
 from anthropic import BadRequestError
+from anthropic import InternalServerError
 from anthropic import PermissionDeniedError
 from anthropic import RateLimitError
 from anthropic.types import Message
@@ -197,13 +198,14 @@ async def ask_bedrock(
             try:
                 response = await client.messages.create(**request_kwargs)
                 break
-            except APITimeoutError:
+            except (APITimeoutError, InternalServerError) as exc:
                 if attempt_number == DEFAULT_TIMEOUT_RETRY_ATTEMPTS:
                     raise
                 logger.warning(
-                    "Retrying Bedrock request after timeout | model=%s | region=%s | attempt=%d/%d | retry_delay_seconds=%.1f",
+                    "Retrying Bedrock request after transient failure | model=%s | region=%s | error=%s | attempt=%d/%d | retry_delay_seconds=%.1f",
                     model_name,
                     resolved_region,
+                    type(exc).__name__,
                     attempt_number,
                     DEFAULT_TIMEOUT_RETRY_ATTEMPTS,
                     DEFAULT_TIMEOUT_RETRY_DELAY_SECONDS,
