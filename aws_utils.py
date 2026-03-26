@@ -18,6 +18,7 @@ from typing import Any
 
 import boto3
 import click
+from anthropic import APITimeoutError
 from anthropic import AsyncAnthropicBedrock
 from anthropic import BadRequestError
 from anthropic import PermissionDeniedError
@@ -31,6 +32,8 @@ DEFAULT_PROMPT = "who is the mayor of Dunedin, New Zealand"
 DEFAULT_MAX_TOKENS = 256
 DEFAULT_TEMPERATURE = 0.0
 DEFAULT_TIMEOUT_SECONDS = 120.0
+DEFAULT_TIMEOUT_RETRY_ATTEMPTS = 3
+DEFAULT_TIMEOUT_RETRY_DELAY_SECONDS = 5.0
 AWS_BEDROCK_SUPPORTED_MODEL_IDS = {
     "anthropic-haiku-4.5": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
     "anthropic-sonnet-4.6": "us.anthropic.claude-sonnet-4-6",
@@ -190,7 +193,22 @@ async def ask_bedrock(
                     "schema": json_output_schema,
                 }
             }
-        response = await client.messages.create(**request_kwargs)
+        for attempt_number in range(1, DEFAULT_TIMEOUT_RETRY_ATTEMPTS + 1):
+            try:
+                response = await client.messages.create(**request_kwargs)
+                break
+            except APITimeoutError:
+                if attempt_number == DEFAULT_TIMEOUT_RETRY_ATTEMPTS:
+                    raise
+                logger.warning(
+                    "Retrying Bedrock request after timeout | model=%s | region=%s | attempt=%d/%d | retry_delay_seconds=%.1f",
+                    model_name,
+                    resolved_region,
+                    attempt_number,
+                    DEFAULT_TIMEOUT_RETRY_ATTEMPTS,
+                    DEFAULT_TIMEOUT_RETRY_DELAY_SECONDS,
+                )
+                await asyncio.sleep(DEFAULT_TIMEOUT_RETRY_DELAY_SECONDS)
     request_duration_seconds = time.perf_counter() - request_started_at
     answer = extract_text_blocks(response)
     usage = response.usage
