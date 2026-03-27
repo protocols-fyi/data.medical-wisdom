@@ -27,6 +27,11 @@ while true; do
   if [[ "$exit_code" -eq 0 ]]; then
     exit 0
   fi
+  if [[ "$exit_code" -eq 137 || "$exit_code" -eq 143 ]]; then
+    printf '[%s] restarting main after signal exit | code=%s | checkpoint=%s\n' "$(date -Iseconds)" "$exit_code" "$checkpoint" >> "$WATCHDOG_LOG"
+    sleep 5
+    continue
+  fi
 
   while true; do
     printf '[%s] invoking codex resume | thread_id=%s | checkpoint=%s\n' "$(date -Iseconds)" "$CODEX_THREAD_ID" "$checkpoint" >> "$WATCHDOG_LOG"
