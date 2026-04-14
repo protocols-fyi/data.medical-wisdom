@@ -28,5 +28,5 @@ package = false
 dev = [
     "ruff>=0.9.10",
     "ty>=0.0.1a29",
-    "pytest>=9.0.2",
+    "pytest>=9.0.3",
 ]
